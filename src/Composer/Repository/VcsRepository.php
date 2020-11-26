@@ -140,7 +140,6 @@ class VcsRepository extends ArrayRepository implements ConfigurableRepositoryInt
         }
 
         foreach ($this->drivers as $driver) {
-            /** @var VcsDriverInterface $driver */
             if ($driver::supports($this->io, $this->config, $this->url)) {
                 $this->driver = new $driver($this->repoConfig, $this->io, $this->config, $this->httpDownloader, $this->processExecutor);
                 $this->driver->initialize();
@@ -150,7 +149,6 @@ class VcsRepository extends ArrayRepository implements ConfigurableRepositoryInt
         }
 
         foreach ($this->drivers as $driver) {
-            /** @var VcsDriverInterface $driver */
             if ($driver::supports($this->io, $this->config, $this->url, true)) {
                 $this->driver = new $driver($this->repoConfig, $this->io, $this->config, $this->httpDownloader, $this->processExecutor);
                 $this->driver->initialize();
