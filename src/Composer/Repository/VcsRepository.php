@@ -83,6 +83,7 @@ class VcsRepository extends ArrayRepository implements ConfigurableRepositoryInt
             'gitlab' => 'Composer\Repository\Vcs\GitLabDriver',
             'bitbucket' => 'Composer\Repository\Vcs\GitBitbucketDriver',
             'git-bitbucket' => 'Composer\Repository\Vcs\GitBitbucketDriver',
+            'bitbucket-server' => 'Composer\Repository\Vcs\BitbucketServerDriver',
             'git' => 'Composer\Repository\Vcs\GitDriver',
             'hg' => 'Composer\Repository\Vcs\HgDriver',
             'perforce' => 'Composer\Repository\Vcs\PerforceDriver',
