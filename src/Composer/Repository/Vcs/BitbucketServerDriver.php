@@ -17,6 +17,7 @@ use Composer\Config;
 use Composer\Factory;
 use Composer\IO\IOInterface;
 use Composer\Json\JsonFile;
+use Composer\Pcre\Preg;
 
 /**
  * @author Oleg Andreyev <oleg@andreyev.lv>
@@ -33,6 +34,7 @@ class BitbucketServerDriver extends VcsDriver
     protected $branches;
     protected $infoCache = array();
     protected $branchesUrl = '';
+    protected $scheme;
     protected $tagsUrl = '';
     protected $homeUrl = '';
     protected $website = '';
@@ -46,32 +48,34 @@ class BitbucketServerDriver extends VcsDriver
     /** @var string|null if set either git or hg */
     protected $vcsType;
 
-    /**
-     * @param string $url
-     *
-     * @return array
-     */
-    private static function matchDomain($url)
-    {
-        if (strpos($url, 'ssh:') === 0) {
-            preg_match('#^ssh://(?:[^@]+)@([^/]+)/([^/]+)/([^/]+?)(\.git|/?)$#i', $url, $matches);
-        } else {
-            preg_match('#^https?://([^/]+)/scm/([^/]+)/([^/]+?)(\.git|/?)$#i', $url, $matches);
-        }
-
-        return $matches;
-    }
+    const URL_REGEX = "#^(?:(?P<scheme>https|ssh?))://(?:(?P<login>.+?)@)?(?P<domain>.+?)(?::(?P<port>[0-9]+))?(?:(?P<parts>/.+)?)/~?(?P<owner>.+)/(?P<repo>[^/]+?)(?:\.git)?$#";
 
     /**
      * {@inheritDoc}
      */
-    public function initialize()
+    public function initialize(): void
     {
-        $match = self::matchDomain($this->url);
+        if (!Preg::isMatch(self::URL_REGEX, $this->url, $match)) {
+            throw new \InvalidArgumentException(sprintf('The Bitbucket Server repository URL %s is invalid. It must be the HTTP(s) URL of a Bitbucket server project.', $this->url));
+        }
 
-        $this->owner = $match[2];
-        $this->repository = $match[3];
-        $this->originUrl = $match[1];
+        $guessedDomain = $match['domain'];
+        $configuredDomains = $this->config->get('bitbucket-server-domains') ?? [];
+        $urlParts = explode("/", $match['parts']);
+        $this->scheme = !empty($match['scheme'])
+            ? $match['scheme']
+            : (isset($this->repoConfig['secure-http']) && $this->repoConfig['secure-http'] === false ? 'http' : 'https')
+        ;
+
+        $origin = self::determineOrigin($configuredDomains, $guessedDomain, $urlParts, $match['port']);
+
+        if (false !== strpos($this->originUrl, ':') || false !== strpos($this->originUrl, '/')) {
+            $this->hasNonstandardOrigin = true;
+        }
+
+        $this->owner = $match['owner'];
+        $this->repository = $match['repo'];
+        $this->originUrl = $match['domain'];
         $this->cache = new Cache(
             $this->io,
             implode('/', array(
@@ -85,9 +89,35 @@ class BitbucketServerDriver extends VcsDriver
     }
 
     /**
+     * @see https://docs.atlassian.com/bitbucket-server/rest/6.4.0/bitbucket-rest.html#idp73
+     */
+    public static function supports(IOInterface $io, Config $config, $url, $deep = false): bool
+    {
+        if (!Preg::isMatch(self::URL_REGEX, $url, $match)) {
+            return false;
+        }
+
+        $scheme = $match['scheme'];
+        $guessedDomain = !empty($match['domain']) ? $match['domain'] : $match['domain2'];
+        $urlParts = explode('/', $match['parts']);
+
+        if (false === self::determineOrigin((array) $config->get('bitbucket-server-domains'), $guessedDomain, $urlParts, $match['port'])) {
+            return false;
+        }
+
+        if ('https' === $scheme && !extension_loaded('openssl')) {
+            $io->writeError('Skipping BitbucketServer driver for '.$url.' because the OpenSSL PHP extension is missing.', true, IOInterface::VERBOSE);
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
      * {@inheritDoc}
      */
-    public function getUrl()
+    public function getUrl(): string
     {
         if ($this->fallbackDriver) {
             return $this->fallbackDriver->getUrl();
@@ -128,7 +158,7 @@ class BitbucketServerDriver extends VcsDriver
     /**
      * {@inheritDoc}
      */
-    public function getComposerInformation($identifier)
+    public function getComposerInformation($identifier): ?array
     {
         if ($this->fallbackDriver) {
             return $this->fallbackDriver->getComposerInformation($identifier);
@@ -197,7 +227,7 @@ class BitbucketServerDriver extends VcsDriver
      *
      * @see https://docs.atlassian.com/bitbucket-server/rest/6.4.0/bitbucket-rest.html#idp302
      */
-    public function getFileContent($file, $identifier)
+    public function getFileContent($file, $identifier): ?string
     {
         if ($this->fallbackDriver) {
             return $this->fallbackDriver->getFileContent($file, $identifier);
@@ -227,7 +257,7 @@ class BitbucketServerDriver extends VcsDriver
      *
      * @see https://docs.atlassian.com/bitbucket-server/rest/6.4.0/bitbucket-rest.html#idp193
      */
-    public function getChangeDate($identifier)
+    public function getChangeDate($identifier): ?\DateTimeImmutable
     {
         if ($this->fallbackDriver) {
             return $this->fallbackDriver->getChangeDate($identifier);
@@ -256,7 +286,7 @@ class BitbucketServerDriver extends VcsDriver
     /**
      * {@inheritDoc}
      */
-    public function getSource($identifier)
+    public function getSource($identifier): array
     {
         if ($this->fallbackDriver) {
             return $this->fallbackDriver->getSource($identifier);
@@ -270,7 +300,7 @@ class BitbucketServerDriver extends VcsDriver
      *
      * @see https://docs.atlassian.com/bitbucket-server/rest/6.4.0/bitbucket-rest.html#idp178
      */
-    public function getDist($identifier)
+    public function getDist($identifier): ?array
     {
         if ($this->fallbackDriver) {
             return $this->fallbackDriver->getDist($identifier);
@@ -292,7 +322,7 @@ class BitbucketServerDriver extends VcsDriver
      *
      * @see https://docs.atlassian.com/bitbucket-server/rest/6.4.0/bitbucket-rest.html#idp321
      */
-    public function getTags()
+    public function getTags(): array
     {
         if ($this->fallbackDriver) {
             return $this->fallbackDriver->getTags();
@@ -352,7 +382,7 @@ class BitbucketServerDriver extends VcsDriver
      *
      * @see https://docs.atlassian.com/bitbucket-server/rest/6.4.0/bitbucket-rest.html#idp180
      */
-    public function getBranches()
+    public function getBranches(): array
     {
         if ($this->fallbackDriver) {
             return $this->fallbackDriver->getBranches();
@@ -458,7 +488,7 @@ class BitbucketServerDriver extends VcsDriver
         return null;
     }
 
-    public function getRootIdentifier()
+    public function getRootIdentifier(): string
     {
         if ($this->fallbackDriver) {
             return $this->fallbackDriver->getRootIdentifier();
@@ -483,29 +513,6 @@ class BitbucketServerDriver extends VcsDriver
     }
 
     /**
-     * @see https://docs.atlassian.com/bitbucket-server/rest/6.4.0/bitbucket-rest.html#idp73
-     */
-    public static function supports(IOInterface $io, Config $config, $url, $deep = false)
-    {
-        $match = self::matchDomain($url);
-        if (!$match) {
-            return false;
-        }
-
-        $originUrl = $match[1];
-
-        try {
-            $http = Factory::createHttpDownloader($io, $config);
-            $response = $http->get(sprintf('https://%s/rest/api/1.0/application-properties', $originUrl))->decodeJson();
-        } catch (\Exception $e) {
-            $io->writeError($e->getMessage());
-            return false;
-        }
-
-        return $response['displayName'] === 'Bitbucket' && version_compare($response['version'], '6.4', '>=');
-    }
-
-    /**
      * {@inheritdoc}
      */
     protected function generateSshUrl()
@@ -526,5 +533,40 @@ class BitbucketServerDriver extends VcsDriver
             $this->process
         );
         $this->fallbackDriver->initialize();
+    }
+
+    /**
+     * @param  array<string> $configuredDomains
+     * @param  string        $guessedDomain
+     * @param  array<string> $urlParts
+     * @param string         $portNumber
+     *
+     * @return string|false
+     */
+    private static function determineOrigin(array $configuredDomains, string $guessedDomain, array &$urlParts, ?string $portNumber)
+    {
+        $guessedDomain = strtolower($guessedDomain);
+
+        if (in_array($guessedDomain, $configuredDomains) || (null !== $portNumber && in_array($guessedDomain.':'.$portNumber, $configuredDomains))) {
+            if (null !== $portNumber) {
+                return $guessedDomain.':'.$portNumber;
+            }
+
+            return $guessedDomain;
+        }
+
+        if (null !== $portNumber) {
+            $guessedDomain .= ':'.$portNumber;
+        }
+
+        while (null !== ($part = array_shift($urlParts))) {
+            $guessedDomain .= '/' . $part;
+
+            if (in_array($guessedDomain, $configuredDomains) || (null !== $portNumber && in_array(Preg::replace('{:\d+}', '', $guessedDomain), $configuredDomains))) {
+                return $guessedDomain;
+            }
+        }
+
+        return false;
     }
 }
